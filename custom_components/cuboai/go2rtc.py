@@ -788,10 +788,10 @@ class Go2RTCManager:
                 # All interfaces: the frontend card / webrtc integration reach this
                 # API via the HA host's LAN IP, so it cannot be localhost-only.
                 # Alternate port avoids conflict with the HA go2rtc add-on.
-                "listen": f":{api_port}",
+                "listen": f"127.0.0.1:{api_port}",  # LOKALER PATCH 2026-10-16: API ohne Login nicht ins LAN
             },
             "rtsp": {
-                "listen": f":{rtsp_port}",
+                "listen": f"127.0.0.1:{rtsp_port}",  # LOKALER PATCH 2026-10-16
             },
             "webrtc": {
                 "listen": f":{webrtc_port}",
