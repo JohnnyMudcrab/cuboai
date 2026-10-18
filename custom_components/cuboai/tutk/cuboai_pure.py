@@ -1510,8 +1510,13 @@ class _LiveAacEncoder:
     to a stereo encoder), which is the format the camera is proven to accept for text-to-speech."""
 
     IN_CODECS = ('pcm_alaw', 'pcm_s16le')
+    # Live talk arrived quiet in the nursery (2026-10-18): the camera's speaker level is firmware-
+    # managed and phones auto-level their microphone, so speaking louder does not help. +6 dB here,
+    # with a limiter so a loud voice clips softly instead of crackling.
+    GAIN = 2.0
+    LIMIT = 0.9
 
-    def __init__(self, rate=16000, in_rate=8000, bit_rate=32000, in_codec='pcm_alaw'):
+    def __init__(self, rate=16000, in_rate=8000, bit_rate=32000, in_codec='pcm_alaw', gain=GAIN):
         if in_codec not in self.IN_CODECS:
             raise ValueError(f"live talk input must be one of {self.IN_CODECS}, not {in_codec!r}")
         import av
@@ -1530,6 +1535,15 @@ class _LiveAacEncoder:
         self._dec.layout = 'mono'
         self._resampler = av.AudioResampler(format='fltp', layout='stereo', rate=rate)
         self._fifo = av.AudioFifo()
+        self._graph = None
+        if gain != 1.0:                                   # volume + limiter via libav's filters
+            self._graph = av.filter.Graph()
+            src = self._graph.add_abuffer(format='fltp', sample_rate=rate, layout='stereo')
+            vol = self._graph.add('volume', volume=str(gain))
+            # level=0: no auto make-up gain, the limiter only catches the peaks
+            lim = self._graph.add('alimiter', limit=str(self.LIMIT), level='0')
+            snk = self._graph.add('abuffersink')
+            src.link_to(vol); vol.link_to(lim); lim.link_to(snk); self._graph.configure()
         self._enc = self._new_encoder(bit_rate)
         self._pts = 0
         # A frame of silence from its own encoder (after priming), for gaps in the speech.
@@ -1566,7 +1580,17 @@ class _LiveAacEncoder:
         for frame in self._dec.decode(self._av.Packet(bytes(data[:whole]))):
             frame.pts = None
             for rf in self._resampler.resample(frame):
-                self._fifo.write(rf)
+                if self._graph is None:
+                    self._fifo.write(rf)
+                    continue
+                self._graph.push(rf)
+                while True:
+                    try:
+                        gf = self._graph.pull()
+                    except (self._av.error.BlockingIOError, self._av.error.EOFError):
+                        break
+                    gf.pts = None
+                    self._fifo.write(gf)
         while self._fifo.samples >= 1024:
             fr = self._fifo.read(1024)
             fr.pts = self._pts

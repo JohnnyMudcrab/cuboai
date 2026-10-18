@@ -79,9 +79,9 @@ def _libav_adts_units(secs=2.0, rate=16000, hz=TONE_HZ):
     return units
 
 
-def _s16(secs, rate, hz=TONE_HZ):
+def _s16(secs, rate, hz=TONE_HZ, amp=8000):
     return b"".join(
-        struct.pack("<h", int(8000 * math.sin(2 * math.pi * hz * i / rate))) for i in range(int(secs * rate))
+        struct.pack("<h", int(amp * math.sin(2 * math.pi * hz * i / rate))) for i in range(int(secs * rate))
     )
 
 
@@ -146,7 +146,21 @@ def test_s16_microphone_becomes_camera_frames_that_decode_back(in_rate):
     assert 13 <= len(units) <= 15, len(units)
     crossings, rms = _tone_stats(units)
     assert abs(crossings - 2 * TONE_HZ) < 20, crossings
-    assert 0.10 < rms < 0.14, rms  # a 0.244-peak tone, upmixed at -3 dB
+    assert 0.20 < rms < 0.28, rms  # a 0.244-peak tone, upmixed at -3 dB, then the +6 dB talk gain
+
+
+@pytest.mark.parametrize(
+    ("gain", "amp", "lo", "hi"),
+    [(1.0, 8000, 0.10, 0.14), (2.0, 8000, 0.20, 0.28), (2.0, 26000, 0.55, 0.66)],
+    ids=["unity", "quiet-doubled", "loud-limited"],
+)
+def test_talk_gain_doubles_quiet_speech_and_limits_loud(gain, amp, lo, hi):
+    """Live talk arrives quiet at the camera, so the encoder adds +6 dB. Kill: the gain dropped
+    (quiet stays at 0.12), or the limiter dropped (a 0.79-peak tone doubled clips at full scale,
+    RMS ~0.7), or the limiter's auto-level left on (it would lift everything towards 0 dB)."""
+    enc = cp._LiveAacEncoder(in_rate=16000, in_codec="pcm_s16le", gain=gain)
+    _, rms = _tone_stats(_feed(enc, _s16(1.0, 16000, amp=amp), [1280]))
+    assert lo < rms < hi, rms
 
 
 @pytest.mark.parametrize("sizes", [[1], [333, 1279, 7, 1]], ids=["one-byte-reads", "odd-reads"])
